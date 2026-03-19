@@ -1,25 +1,61 @@
 #!/usr/bin/env python3
-"""
-STEP 0 — Inventory & metadata check + station-day index + coverage report
-(Updated for folder layout with YEAR subfolders)
+"""Step01_check_inventory.py
 
-Folder layout:
-  waveforms/1F/A001/2018/*.mseed
-  waveforms/1F/A001/2019/*.mseed
-  ...
+Goal
+----
+Build a station-day inventory and quick QC products from a local waveform
+archive. The script discovers MiniSEED files, validates headers, reports
+missing stations and creates coverage and station metadata tables for
+downstream steps.
 
-Filename convention example:
-  1F.A001.00.DPZ-DPN-DPE.M.20180914.mseed
+Features
+--------
+- Fast discovery of daily MiniSEED files (YEAR subfolders supported).
+- Build station-day index, coverage matrix and per-file/header QC summary.
+- Produce simple plots: coverage heatmap, sampling-rate histogram, station maps.
 
-Outputs (in --outdir):
-- station_day_index.csv
-- station_day_coverage.csv
+Usage
+-----
+Run from the project root (where `--data-root` lives). Example:
+
+  python Step01_check_inventory.py --data-root data --network 1F --outdir outputs/Step01
+
+Key Options
+-----------
+- --data-root: root folder containing `waveforms/` and `metadata/` (default: data)
+- --network: network folder under data-root to inspect (default: 1F)
+- --outdir: output folder for CSV/PNG products
+- --fs-expected / --fs-tol: expected sampling rate and tolerance (Hz)
+
+Folder layout & search rules
+---------------------------
+Expected layout (relative to --data-root):
+
+  waveforms/<NETWORK>/<STATION>/<YEAR>/<FILES>.mseed
+  metadata/<NETWORK>.<STATION>.station.xml
+
+The script searches recursively under `waveforms/<NETWORK>/` and expects
+files named with tokens (NETWORK.STATION.LOC.COMPS.YYYYMMDD.mseed). Station
+folders are inferred from the immediate children of `waveforms/<NETWORK>/`.
+Files not matching the filename pattern are ignored.
+
+Output
+------
+- station_day_index.csv          : one row per discovered station-day file
+- station_day_coverage.csv       : station x day presence matrix
 - station_day_coverage_heatmap.png
-- stations_missing.csv
-- files_inventory.csv
-- stations_metadata_validated.csv
-- sampling_rate_hist.png
-- sensors_latlon.png / sensors_projected.png (if StationXML provides coords)
+- stations_missing.csv           : expected station folders not found
+- files_inventory.csv            : per-file QC (ObsPy header read)
+- stations_metadata_validated.csv: per-station summary and flags
+- sampling_rate_hist.png, sensors_latlon.png, sensors_projected.png
+
+Notes
+-----
+- The script performs header-only reads (`headonly=True`) for speed; it does
+  not validate full trace contents. It assumes one daily MiniSEED file per
+  station/day; duplicates are flagged in `station_day_index.csv`.
+- Station discovery is folder-driven (lists of station folders under
+  `waveforms/<NETWORK>/`) — this is used to report missing stations.
 """
 
 from __future__ import annotations
@@ -282,7 +318,10 @@ def plot_coverage_heatmap(cov_df: pd.DataFrame, outdir: Path, max_days: int = 18
 # Main
 # -----------------------------
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--data-root", default="data", type=Path,
                     help="Root folder, defautlt: data/")
     ap.add_argument("--network", default="1F", type=str,
@@ -290,7 +329,13 @@ def main():
     ap.add_argument("--outdir", default="outputs/Step01_check_inventory", type=Path)
     ap.add_argument("--fs-expected", default=250.0, type=float)
     ap.add_argument("--fs-tol", default=0.1, type=float)
+    ap.add_argument("--show-doc", action="store_true",
+                    help="Print the module documentation and exit")
     args = ap.parse_args()
+
+    if args.show_doc:
+        print(__doc__)
+        return 0
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     inv_dir = args.data_root / "metadata"
