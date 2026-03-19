@@ -166,7 +166,7 @@ def write_daily_h5(out_h5: Path, day: dt.date, daily: dict[str, np.ndarray]):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outdir",
-                    default="outputs/beam_xcorr", type=Path)  # changed default to beam_xcorr (new Step03)
+                    default="outputs/Step03_beamforming_xcorr", type=Path)
     ap.add_argument("--start-day", default=None, type=str,
                     help="Optional start day YYYY-MM-DD (UTC)")
     ap.add_argument("--end-day", default=None, type=str,

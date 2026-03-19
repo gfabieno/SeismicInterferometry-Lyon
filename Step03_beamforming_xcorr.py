@@ -1,19 +1,49 @@
-# python
-import h5py
-import numpy as np
-import torch
+"""Step03_beamforming_xcorr.py
+
+Goal
+----
+Perform per-segment beamforming and cross-correlation on the local waveform
+archive and write per-segment HDF5 outputs containing beam power and xcorr
+stacks.
+
+Features
+--------
+- Read station-day daily files, run beamforming (Z,T,R) and cross-correlation
+  for all pairs, and store results per segment in HDF5.
+- Basic QC hooks are available and configurable via CLI flags.
+
+Usage
+-----
+  python Step03_beamforming_xcorr.py --data-root data --network 1F --starttime 2018-09-15T00:00:00 --endtime 2018-09-16T00:00:00
+
+Key Options
+-----------
+- --data-root: root folder containing `waveforms/` and `metadata/` (default: data)
+- --network, --location, --channels: station selection and channels to read
+- --outdir: output directory (default: outputs/Step03_beamforming_xcorr)
+- QC and processing options available as CLI args; see -h for full list.
+
+Output
+------
+Per-segment HDF5 files under `<outdir>/beam_xcorr/segments/` with groups
+`beamforming` and `xcorr`, plus optional figures under `<outdir>/figures/`.
+
+Notes
+-----
+- Heavy scientific dependencies are imported lazily after parsing
+  arguments so that `--show-doc`/`-h` work without installing everything.
+"""
+
 import argparse
-from obspy import read_inventory, UTCDateTime
-from utils import stations_from_folders, read_block_for_station, start_segment_reader_thread, window_qc_mask_station
-from beamforming import plane_wave_beamforming, plot_beamforming, make_slowness_grid
-from utils import inv_station_xy
-from cross_correlation import cross_correlation, cc_lags, pairs_all, butterworth_bandpass
 from pathlib import Path
-import matplotlib.pyplot as plt
+import sys
 
 
 def main_process():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--data-root", default="data", type=Path,
                     help="Root folder, e.g. waveforms/")
     ap.add_argument("--network", default="1F", type=str,
@@ -22,7 +52,7 @@ def main_process():
                     help="Location code (default: 00)")
     ap.add_argument("--channels", default="DPZ,DPN,DPE", type=str,
                     help="Channels to read (default: DPZ,DPN,DPE)")
-    ap.add_argument("--outdir", default="outputs", type=Path)
+    ap.add_argument("--outdir", default="outputs/Step03_beamforming_xcorr", type=Path)
     ap.add_argument("--starttime", default="2018-09-15T00:00:00",
                     type=str, help="Start time (UTCDateTime format)")
     ap.add_argument("--endtime", default="2018-10-03T00:00:00",
@@ -59,7 +89,9 @@ def main_process():
     ap.add_argument("--eps", default=1e-2, type=float)
     ap.add_argument("--maxlag", default=5.0, type=float,
                     help="If set, store only +/- maxlag seconds around lag0")
-    ap.add_argument("--device", default="cuda:1" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--device", default="cpu",
+                    help="Torch device string, e.g. cpu or cuda:0 (default: cpu)")
+    ap.add_argument("--show-doc", action="store_true", help="Print the module documentation and exit")
 
     #QC parameters
     ap.add_argument("--qc-zero-frac-max", default=0.01, type=float)
@@ -70,13 +102,27 @@ def main_process():
     ap.add_argument("--qc-line-ratio-max", default=20.0, type=float)
     args = ap.parse_args()
 
+    if args.show_doc:
+        print(__doc__)
+        return 0
+
+    # Lazy imports (heavy packages) so help and --show-doc work without deps
+    import h5py
+    import numpy as np
+    import torch
+    import matplotlib.pyplot as plt
+    from obspy import read_inventory, UTCDateTime
+    from utils import stations_from_folders, read_block_for_station, start_segment_reader_thread, window_qc_mask_station, inv_station_xy
+    from beamforming import plane_wave_beamforming, plot_beamforming, make_slowness_grid
+    from cross_correlation import cross_correlation, cc_lags, pairs_all, butterworth_bandpass
+
     device = torch.device(args.device)
 
     print("Starting beamforming+xcor process with arguments:")
     for k, v in vars(args).items():
         print(f"  {k}: {v}")
 
-    outdir = args.outdir / "beam_xcorr"
+    outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
     out_segments_dir = outdir / "segments"
     out_segments_dir.mkdir(parents=True, exist_ok=True)
