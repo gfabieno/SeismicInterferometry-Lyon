@@ -152,7 +152,16 @@ def _plot_reference_gather(refs: Dict[str, np.ndarray], lags: np.ndarray, offset
     plt.close(fig)
 
 
-def build_references(*, seg_files: list[Path], coords_xy_m: np.ndarray, pairs: np.ndarray, out_h5: Path, comps: list[str], ref_method: str = "mean", trim_pct: float = 0.1, max_files: int = 0, overwrite: bool = False, pair_chunk: Optional[int] = None):
+def build_references(*, seg_files: list[Path],
+                     coords_xy_m: np.ndarray,
+                     pairs: np.ndarray, out_h5: Path,
+                     comps: list[str],
+                     normalize = False,
+                     ref_method: str = "mean",
+                     trim_pct: float = 0.1,
+                     max_files: int = 0,
+                     overwrite: bool = False,
+                     pair_chunk: Optional[int] = None):
     """Build and cache reference traces only (no window selection).
 
     This implementation reads each segment file once and extracts all requested components
@@ -196,6 +205,7 @@ def build_references(*, seg_files: list[Path], coords_xy_m: np.ndarray, pairs: n
     # Print summary of operation
     print("Building reference traces with parameters:")
     print(f"  method = {ref_method}")
+    print(f"  normalize = {normalize}")
     print(f"  comps   = {','.join(comps_u)}")
     print(f"  n_pairs = {P}")
     print(f"  n_segs  = {D}")
@@ -212,6 +222,8 @@ def build_references(*, seg_files: list[Path], coords_xy_m: np.ndarray, pairs: n
                 corr = g["corr"][...].astype(np.float32)
                 comp_traces = extract_components_from_corr(corr, theta, comps_u)
                 for comp, arr in comp_traces.items():
+                    if normalize:
+                        arr = arr / np.sqrt((np.sum(arr**2, axis=-1, keepdims=True) + 1e-12))
                     acc[comp] += arr.astype(np.float64)
                 seg_ids.append(str(g.attrs.get("starttime", h5.attrs.get("starttime", fp.name))))
                 count += 1
@@ -238,6 +250,10 @@ def build_references(*, seg_files: list[Path], coords_xy_m: np.ndarray, pairs: n
                     comp_traces = extract_components_from_corr(corr, theta, comps_u)
                     for ci, comp in enumerate(comps_u):
                         buf[di, ci, :, :] = comp_traces[comp][p0:p1, :]
+                        if normalize:
+                            buf[di, ci, :, :] = buf[di, ci, :, :] / np.sqrt(
+                                    (np.sum(buf[di, ci, :, :] ** 2, axis=-1,
+                                            keepdims=True) + 1e-12))
                     if di == 0:
                         seg_ids.append(str(g.attrs.get("starttime", h5.attrs.get("starttime", fp.name))))
             # aggregate per component for this chunk
@@ -250,6 +266,7 @@ def build_references(*, seg_files: list[Path], coords_xy_m: np.ndarray, pairs: n
     with h5py.File(out_h5, "w") as h5:
         h5.attrs["ref_method"] = str(ref_method)
         h5.attrs["trim_pct"] = float(trim_pct)
+        h5.attrs["normalize"] = bool(normalize)
         h5.create_dataset("lags", data=lags.astype(np.float32))
         h5.create_dataset("pairs_i_j", data=pairs.astype(np.int32))
         h5.create_dataset("offsets_m", data=offsets_m.astype(np.float32))
@@ -384,107 +401,11 @@ def load_reference_and_windows(ref_h5: Path):
             t1_s = None
     return lags, offsets_m, pairs, refs, (t0_s, t1_s)
 
-
-
-# ---------------- existing plotting functions (slightly hardened) ----------------
-
-def plot_hourly_images_for_pair(seg_files, coords, pairs, i, j, pidx, out_png: Path, nhours: int = None, maxlag_s: Optional[float] = None, ref_traces: Optional[Dict[str, np.ndarray]] = None, ref_lags: Optional[np.ndarray] = None, ref_pidx: Optional[int] = None):
-    if nhours:
-        seg_files = seg_files[:nhours]
-    if len(seg_files) == 0:
-        raise RuntimeError("No segment files found")
-    TT_rows, RR_rows, ZZ_rows = [], [], []
-    lags = None
-    theta = azimuth_EN(coords, i, j)
-    for f in seg_files:
-        try:
-            with h5py.File(f, "r") as h5:
-                g = h5.get("xcorr", h5)
-                lags = g["lags"][...].astype(np.float32)
-                corr = g["corr"]
-                ZZ = corr[pidx, 0, 0, :].astype(np.float32)
-                NN = corr[pidx, 1, 1, :].astype(np.float32)
-                NE = corr[pidx, 1, 2, :].astype(np.float32)
-                EN = corr[pidx, 2, 1, :].astype(np.float32)
-                EE = corr[pidx, 2, 2, :].astype(np.float32)
-                RR, TT = rotate_NE_corr_to_RR_TT(NN, NE, EN, EE, np.asarray(theta))
-                if maxlag_s is not None:
-                    mask = (lags >= -maxlag_s) & (lags <= maxlag_s)
-                    lags = lags[mask]
-                    ZZ = ZZ[mask]
-                    RR = RR[mask]
-                    TT = TT[mask]
-                TT_rows.append(TT)
-                RR_rows.append(RR)
-                ZZ_rows.append(ZZ)
-        except Exception as e:
-            print(f"Warning: skipping file {f} due to error: {e}")
-    if lags is None:
-        raise RuntimeError("Could not load lags from any segment file")
-    TT_im = np.vstack(TT_rows)
-    RR_im = np.vstack(RR_rows)
-    ZZ_im = np.vstack(ZZ_rows)
-    dt = float(lags[1] - lags[0])
-    TT_im = butterworth_bandpass(torch.from_numpy(TT_im), dt, 2, 5).cpu()
-    RR_im = butterworth_bandpass(torch.from_numpy(RR_im), dt, 2, 5).cpu()
-    ZZ_im = butterworth_bandpass(torch.from_numpy(ZZ_im), dt, 2, 5).cpu()
-    fig, axs = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=True, sharey=True)
-    extent = (float(lags[0]), float(lags[-1]), float(len(seg_files) - 0.5), float(-0.5))
-    axs[0].imshow(TT_im, aspect="auto", extent=extent, interpolation="nearest")
-    axs[0].set_title("TT")
-    axs[0].set_xlabel("Lag (s)")
-    axs[0].set_ylabel("Hour index")
-    axs[1].imshow(RR_im, aspect="auto", extent=extent, interpolation="nearest")
-    axs[1].set_title("RR")
-    axs[1].set_xlabel("Lag (s)")
-    axs[2].imshow(ZZ_im, aspect="auto", extent=extent, interpolation="nearest")
-    axs[2].set_title("ZZ")
-    axs[2].set_xlabel("Lag (s)")
-    fig.suptitle(f"Hourly xcorr images for pair ({i},{j})")
-    # Optionally overlay reference wiggle (centered vertically) if provided
-    if ref_traces is not None and ref_lags is not None and ref_pidx is not None:
-        try:
-            comp_map = ["TT", "RR", "ZZ"]
-            # image vertical extent: top (len(seg_files)-0.5) to -0.5
-            y_top = float(len(seg_files) - 0.5)
-            y_bottom = float(-0.5)
-            mid_y = 0.5 * (y_top + y_bottom)
-            vert_range = abs(y_top - y_bottom)
-            wiggle_amp = 0.3 * vert_range
-            # mask ref lags to current maxlag if specified
-            if maxlag_s is not None:
-                ref_mask = (ref_lags >= -float(maxlag_s)) & (ref_lags <= float(maxlag_s))
-            else:
-                ref_mask = slice(None)
-            for ax, comp in zip(axs, comp_map):
-                if comp not in ref_traces:
-                    continue
-                R = ref_traces[comp]
-                if ref_pidx < 0 or ref_pidx >= R.shape[0]:
-                    continue
-                trace = R[ref_pidx, :].astype(np.float32)
-                lags_ref = ref_lags[ref_mask]
-                tr_use = trace[ref_mask]
-                if tr_use.size == 0:
-                    continue
-                tr_norm = tr_use / (np.max(np.abs(tr_use)) + 1e-12)
-                yvals = mid_y + tr_norm * wiggle_amp
-                ax.plot(lags_ref, yvals, color="r", linewidth=1.0, alpha=0.9)
-        except Exception as e:
-            print(f"Warning: could not overlay reference wiggle: {e}")
-
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=200)
-    plt.close(fig)
-
-
 # ---------------- CLI / main ----------------
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--xcorr-dir", default="outputs/beam_xcorr", type=Path)
-    ap.add_argument("--sta1", type=str, default="A002", help="station name as in meta.h5 (e.g., 1F.CC01)")
-    ap.add_argument("--sta2", type=str, default="A021", help="station name as in meta.h5 (e.g., 1F.CC10)")
     ap.add_argument("--nhours", type=int, default=None, help="limit number of segment files for the hourly-pair plot")
     ap.add_argument("--maxlag", type=float, default=3, help="optional +/- maxlag seconds for plots")
     ap.add_argument("--max-files", type=int, default=0, help="limit hours for averaging and reference building (0 = all)")
@@ -493,6 +414,7 @@ def main():
     ap.add_argument("--build-windows", default=True,
                     action="store_true", help="compute per-pair windows from cached references")
     ap.add_argument("--ref-method", type=str, default="mean", choices=["mean", "median", "trim"], help="reference aggregation")
+    ap.add_argument("--normalize", default=True, action="store_true", help="normalize traces before stacking for reference")
     ap.add_argument("--trim-pct", type=float, default=0.1, help="alpha-trim fraction per side (only for --ref-method trim)")
     ap.add_argument("--ref-comps", type=str, default="ZZ,RR,TT", help="comma-separated components to build/plot")
     ap.add_argument("--clip-pct", type=float, default=99.0, help="percentile for grayscale clipping (on |amplitude|)")
@@ -507,6 +429,9 @@ def main():
     ap.add_argument("--pair-chunk", type=int, default=None, help="number of pairs per chunk for reference building (default: all)")
     ap.add_argument("--verbose", default=True,
                     action="store_true", help="print verbose progress and parameters")
+    ap.add_argument("--fmin", type=float, default=2, help="minimum frequency for filtering")
+    ap.add_argument("--fmax", type=float, default=5, help="maximum frequency for filtering")
+
     args = ap.parse_args()
     # Print a concise summary of parsed arguments when verbose
     if args.verbose:
@@ -524,7 +449,7 @@ def main():
         if alt.exists():
             meta_path = alt
         else:
-            alt2 = Path("outputs/beam_xcorr") / "meta.h5"
+            alt2 = Path("outputs/Step03_beamforming_xcorr") / "meta.h5"
             if alt2.exists():
                 meta_path = alt2
             else:
@@ -535,7 +460,7 @@ def main():
         if alt_seg.exists():
             seg_dir = alt_seg
         else:
-            alt_seg2 = Path("outputs/beam_xcorr") / "segments"
+            alt_seg2 = Path("outputs/Step03_beamforming_xcorr") / "segments"
             if alt_seg2.exists():
                 seg_dir = alt_seg2
             else:
@@ -565,7 +490,8 @@ def main():
     refs, lags = None, None
     if args.build_reference:
         print(f"Step: build references -> {ref_h5}")
-        build_references(seg_files=seg_files, coords_xy_m=coords, pairs=pairs, out_h5=ref_h5, comps=comps, ref_method=args.ref_method, trim_pct=float(args.trim_pct), max_files=int(args.max_files), overwrite=bool(args.overwrite), pair_chunk=args.pair_chunk)
+        build_references(seg_files=seg_files, coords_xy_m=coords, pairs=pairs, out_h5=ref_h5, comps=comps, ref_method=args.ref_method, trim_pct=float(args.trim_pct), max_files=int(args.max_files), overwrite=bool(args.overwrite), pair_chunk=args.pair_chunk,
+                         normalize=bool(args.normalize))
         print(f"Built references and wrote: {ref_h5}")
 
     if args.build_windows:
@@ -602,36 +528,6 @@ def main():
             title2 = f"Reference gather windowed (method={args.ref_method}, mode={args.window_mode})"
             _plot_reference_gather(refs_win_ord, lags, offsets_m, out_png2, clip_pct=float(args.clip_pct), title=title2, windows=windows)
             print(f"Wrote: {out_png2}")
-
-
-    if args.sta1 is not None and args.sta2 is not None:
-        print(f"Step: hourly images requested for pair {args.sta1} - {args.sta2} (showing up to nhours={args.nhours})")
-        i, j, pidx = get_pair_indices(sta_to_idx, pair_to_pidx, args.sta1, args.sta2)
-        out_png = outdir / f"hourly_pair_{args.sta1.replace('.','_')}_{args.sta2.replace('.','_')}_{args.ref_method}.png"
-
-        print(f"Plotting hourly images for pair {args.sta1} - {args.sta2}")
-        try:
-            if ref_h5.exists():
-                # refs and lags were loaded above when ref_h5.exists()
-                plot_hourly_images_for_pair(
-                    seg_files=seg_files,
-                    coords=coords,
-                    pairs=pairs,
-                    i=i,
-                    j=j,
-                    pidx=pidx,
-                    out_png=out_png,
-                    nhours=args.nhours,
-                    maxlag_s=args.maxlag,
-                    ref_traces=refs,
-                    ref_lags=lags,
-                    ref_pidx=pidx,
-                )
-            else:
-                plot_hourly_images_for_pair(seg_files=seg_files, coords=coords, pairs=pairs, i=i, j=j, pidx=pidx, out_png=out_png, nhours=args.nhours, maxlag_s=args.maxlag)
-            print(f"Wrote: {out_png}")
-        except Exception as e:
-            print(f"Warning: failed to create hourly image for pair {args.sta1}-{args.sta2}: {e}")
 
 
 if __name__ == "__main__":
