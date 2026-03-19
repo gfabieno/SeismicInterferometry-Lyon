@@ -55,13 +55,15 @@ from cross_correlation import butterworth_bandpass
 def main() -> int:
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--in-dir", default=Path("outputs/beam_xcorr"),
+    ap.add_argument("--in-dir", default=Path(
+        "outputs/Step03_beamforming_xcorr"),
                     type=Path,
                     help="Directory containing segments/ and (optionally) meta.h5",
-    )
-    ap.add_argument("--ref-h5", default=Path("outputs/beam_xcorr/references_mean.h5"),
-        type=Path, help="Path to an existing reference HDF5 file created by STEP04",
-    )
+                    )
+    ap.add_argument("--ref-h5", default=Path(
+        "outputs/Step03_beamforming_xcorr/references_mean.h5"),
+                    type=Path, help="Path to an existing reference HDF5 file created by STEP04",
+                    )
     ap.add_argument("--out-h5", default=Path("outputs/STEP05_dvv_all_pairs/dv_stretching_all.h5"),
                     type=Path,  help="Optional HDF5 output")
     ap.add_argument( "--component",  default="TT",
