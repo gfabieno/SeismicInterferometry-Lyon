@@ -1,14 +1,59 @@
 #!/usr/bin/env python3
-"""
-Simple RESIF ObsPy downloader (parallel + resume + metadata-only size estimate)
-+ End summary table per station: start/end, gaps?, size, position, file count.
+"""Step00_download_dataset.py
 
-Install:
-  pip install obspy
+Goal
+----
+Download seismic miniSEED daily files from an FDSN provider (default RESIF)
+for a list of stations. The script supports parallel downloads, automatic
+resume (skip existing files), and a metadata-only size estimate before
+downloading.
 
-Run:
-  python resif_simple_obspy_downloader.py --out data --workers 8
-  python resif_simple_obspy_downloader.py --out data --estimate-only
+Features
+--------
+- Query station availability and time ranges via FDSN (Station/Channel level).
+- Estimate total disk usage using channel sample rates (metadata-only).
+- Download per-station per-day MiniSEED files in parallel with retries.
+- Save StationXML (response) files per station.
+- Print a final summary table per station (date range, missing days, file
+  count, actual/estimated size, coordinates).
+
+Usage
+-----
+Command-line options are provided. Example:
+
+  python Step00_download_dataset.py --out data --workers 8
+
+To only estimate total size without downloading:
+
+  python Step00_download_dataset.py --out data --estimate-only
+
+Key options:
+- --out: output folder root where `waveforms/` and `metadata/` will be
+  created (default: data).
+- --provider: FDSN provider (default: RESIF).
+- --network / --location / --channels: network/location/channel codes.
+- --workers: number of parallel download workers.
+
+Output format and layout
+------------------------
+The script writes files under the output root as follows:
+
+  <out>/waveforms/<NETWORK>/<STATION>/<NETWORK>.<STATION>.<YYYYMMDD>.mseed
+  <out>/metadata/<NETWORK>.<STATION>.station.xml
+
+- MiniSEED files: one file per station per day (MSEED) containing the
+  requested channels (e.g., DPZ,DPN,DPE).
+- StationXML files: saved once per station and include response/metadata.
+
+Requirements
+------------
+- Python with the `obspy` package installed (pip install obspy).
+
+Notes
+-----
+- The script is conservative about sample rates (uses the maximum rate
+  observed for each channel code across epochs).
+
 """
 
 from __future__ import annotations
@@ -271,20 +316,38 @@ def print_summary_table(rows: List[Dict[str, object]]) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="data", help="Output folder root (default: data)")
-    ap.add_argument("--provider", default="RESIF", help="FDSN provider (default: RESIF)")
-    ap.add_argument("--network", default="1F", help=f"Network code (default: 1F)")
-    ap.add_argument("--location", default="00", help=f"Location code (default: 00)")
-    ap.add_argument("--channels", default="DPZ,DPN,DPE", help=f"Channel codes comma-separated (default: DPE,DPN,DPZ)")
-    ap.add_argument("--workers", type=int, default=8, help="Parallel workers (default: 8)")
-    ap.add_argument("--retries", type=int, default=5, help="Retries per request (default: 5)")
-    ap.add_argument("--estimate-only", action="store_true", help="Only estimate disk usage and exit")
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--out", default="data",
+                    help="Output folder root (default: data)")
+    ap.add_argument("--provider", default="RESIF",
+                    help="FDSN provider (default: RESIF)")
+    ap.add_argument("--network", default="1F",
+                    help=f"Network code (default: 1F)")
+    ap.add_argument("--location", default="00",
+                    help=f"Location code (default: 00)")
+    ap.add_argument("--channels", default="DPZ,DPN,DPE",
+                    help=f"Channel codes comma-separated (default: DPE,DPN,DPZ)")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="Parallel workers (default: 8)")
+    ap.add_argument("--retries", type=int, default=5,
+                    help="Retries per request (default: 5)")
+    ap.add_argument("--estimate-only", action="store_true",
+                    help="Only estimate disk usage and exit")
+    ap.add_argument("--show-doc", action="store_true",
+                    help="Print the module documentation and exit")
     ap.add_argument("--bytes-per-sample", type=float, default=DEFAULT_BYTES_PER_SAMPLE,
                     help=f"Estimation model bytes/sample (default: {DEFAULT_BYTES_PER_SAMPLE})")
     ap.add_argument("--overhead", type=float, default=DEFAULT_OVERHEAD_FACTOR,
                     help=f"Estimation overhead factor (default: {DEFAULT_OVERHEAD_FACTOR})")
     args = ap.parse_args()
+
+    if args.show_doc:
+        # Print the full module docstring and exit (useful for long descriptions)
+        print(__doc__)
+        return 0
 
     out_root = args.out
     safe_makedirs(out_root)
